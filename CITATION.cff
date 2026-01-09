@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "Fernandes"
+    given-names: "Nuno"
+    orcid: "0000-0003-2662-069X"
+title: "Ethical SNN Research: Multi-Phase Investigation of Dual-Process Theory in Spiking Neural Networks"
+version: 0.1.0
+date-released: 2026-01-09
+url: "https://github.com/nfriacowboy/ethical-snn-research"
+license: MIT
+repository-code: "https://github.com/nfriacowboy/ethical-snn-research"
+keywords:
+  - AGI alignment
+  - spiking neural networks
+  - dual-process theory
+  - artificial life
+  - neuroethics
+  - STDP
+  - computational neuroscience
+  - ethics
+  - dual-process theory
+abstract: >-
+  A multi-phase research project investigating the emergence of 
+  ethical-like behaviors in artificial organisms using spiking 
+  neural networks (SNNs) based on dual-process theory. Phase 1 
+  examines survival-only vs. dual-process architectures in 
+  grid-world simulations.
+references:
+  - type: dataset
+    authors:
+      - family-names: "Fernandes"
+        given-names: "Nuno"
+    title: "Ethical SNN Research - Phase 1 Data"
+    year: 2026
+    url: "https://osf.io/[teu-project-id]/"
+    doi: "[DOI do OSF]"

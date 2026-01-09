@@ -1,0 +1,37 @@
+# Phase 1 Configuration
+# Dual-Process vs Survival-Only Comparison
+
+# Simulation parameters
+architecture: single  # Override: 'single' for Condition A, 'dual' for Condition B
+num_organisms: 10
+grid_size: [50, 50]
+max_timesteps: 1000
+checkpoint_frequency: 100
+
+# Environment parameters
+food_spawn_rate: 0.02
+energy_decay: 1.0
+collision_penalty: 10.0
+
+# Ethical processing (for dual-process only)
+ethical_weight: 0.5
+
+# Network architecture
+snn_input_size: 128
+snn_hidden_size: 256
+snn_output_size: 8
+ethical_input_size: 64
+ethical_hidden_size: 128
+
+# Training parameters (for pre-training ethical network)
+stdp_learning_rate: 0.01
+supervised_learning_rate: 0.001
+batch_size: 32
+num_epochs: 50
+
+# Reproducibility
+seed: null  # Will use run_id if null
+
+# Logging
+verbose: true
+save_checkpoints: true
