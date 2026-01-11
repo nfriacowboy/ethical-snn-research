@@ -1,169 +1,376 @@
-"""Visualization utilities."""
+"""Visualization utilities for simulation analysis.
 
+This module provides functions for visualizing simulation data including:
+- Static grid plots showing organism and food positions
+- Energy over time plots
+- Animated visualizations from HDF5 log files
+
+Example:
+    >>> from src.utils.visualization import plot_grid, plot_energy_over_time
+    >>> fig = plot_grid(environment, organisms)
+    >>> fig.savefig('grid_snapshot.png')
+"""
+
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Tuple
+
+import h5py
 import matplotlib.pyplot as plt
-import seaborn as sns
+import matplotlib.animation as animation
+from matplotlib.patches import Rectangle, Circle
 import numpy as np
-from typing import List, Dict, Any
-import matplotlib.patches as patches
+import seaborn as sns
+
+# Set seaborn style for better looking plots
+sns.set_style("whitegrid")
+sns.set_palette("husl")
 
 
-def plot_grid_world(grid: np.ndarray, organism_positions: List[tuple], 
-                   food_positions: List[tuple], timestep: int = 0):
-    """Plot grid world state.
+def plot_grid(
+    environment: Any,
+    organisms: List[Any],
+    title: str = "Grid World State",
+    figsize: Tuple[int, int] = (10, 10),
+    show_grid: bool = True
+) -> plt.Figure:
+    """Plot static snapshot of grid world with organisms and food.
     
     Args:
-        grid: Grid array
-        organism_positions: List of (x, y) organism positions
-        food_positions: List of (x, y) food positions
-        timestep: Current timestep
-    """
-    fig, ax = plt.subplots(figsize=(10, 10))
-    
-    # Draw grid
-    ax.imshow(grid.T, cmap='Greys', alpha=0.3, origin='lower')
-    
-    # Draw food
-    if food_positions:
-        food_x, food_y = zip(*food_positions)
-        ax.scatter(food_x, food_y, c='green', s=100, marker='s', 
-                  label='Food', alpha=0.7)
-    
-    # Draw organisms
-    if organism_positions:
-        org_x, org_y = zip(*organism_positions)
-        ax.scatter(org_x, org_y, c='red', s=200, marker='o', 
-                  label='Organisms', alpha=0.8)
-    
-    ax.set_xlim(-0.5, grid.shape[0] - 0.5)
-    ax.set_ylim(-0.5, grid.shape[1] - 0.5)
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_title(f'Grid World - Timestep {timestep}')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    return fig
-
-
-def plot_energy_over_time(organism_histories: List[List[Dict]], save_path: str = None):
-    """Plot organism energy levels over time.
-    
-    Args:
-        organism_histories: List of organism history lists
-        save_path: Path to save figure (optional)
-    """
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    for i, history in enumerate(organism_histories):
-        if not history:
-            continue
+        environment: GridWorld instance with food positions
+        organisms: List of Organism instances with positions and energies
+        title: Plot title
+        figsize: Figure size (width, height)
+        show_grid: Whether to show grid lines
         
-        timesteps = [h['age'] for h in history]
-        energies = [h['energy'] for h in history]
+    Returns:
+        Matplotlib figure object
         
-        ax.plot(timesteps, energies, label=f'Organism {i}', alpha=0.7)
+    Example:
+        >>> fig = plot_grid(env, organisms)
+        >>> fig.savefig('snapshot.png')
+    """
+    fig, ax = plt.subplots(figsize=figsize)
     
-    ax.set_xlabel('Timestep')
-    ax.set_ylabel('Energy')
-    ax.set_title('Organism Energy Over Time')
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(True, alpha=0.3)
+    grid_size = environment.grid_size
+    
+    # Set up axes
+    ax.set_xlim(-0.5, grid_size - 0.5)
+    ax.set_ylim(-0.5, grid_size - 0.5)
+    ax.set_aspect('equal')
+    
+    # Background
+    ax.set_facecolor('#f0f0f0')
+    
+    # Draw grid lines
+    if show_grid:
+        for i in range(grid_size + 1):
+            ax.axhline(i - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+            ax.axvline(i - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+    
+    # Draw food as green squares
+    food_positions = environment.food_positions
+    if len(food_positions) > 0:
+        for fx, fy in food_positions:
+            rect = Rectangle(
+                (fx - 0.4, fy - 0.4), 0.8, 0.8,
+                facecolor='green', edgecolor='darkgreen',
+                linewidth=2, alpha=0.7
+            )
+            ax.add_patch(rect)
+    
+    # Draw organisms as colored circles
+    colors = plt.cm.tab10(np.linspace(0, 1, len(organisms)))
+    
+    for idx, (organism, color) in enumerate(zip(organisms, colors)):
+        if organism.is_alive():
+            x, y = organism.position
+            
+            # Circle for organism
+            circle = Circle(
+                (x, y), 0.35,
+                facecolor=color, edgecolor='black',
+                linewidth=2, alpha=0.8
+            )
+            ax.add_patch(circle)
+            
+            # Energy text
+            energy_pct = (organism.energy / organism.max_energy) * 100
+            ax.text(
+                x, y - 0.7, f'{energy_pct:.0f}%',
+                ha='center', va='top', fontsize=8,
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
+            )
+            
+            # Organism ID
+            ax.text(
+                x, y, str(idx),
+                ha='center', va='center',
+                fontsize=10, fontweight='bold', color='white'
+            )
+    
+    # Legend
+    legend_elements = [
+        plt.Line2D([0], [0], marker='s', color='w', label='Food',
+                   markerfacecolor='green', markersize=10),
+        plt.Line2D([0], [0], marker='o', color='w', label='Organism',
+                   markerfacecolor='red', markersize=10)
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+    
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_xlabel('X Position', fontsize=12)
+    ax.set_ylabel('Y Position', fontsize=12)
     
     plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    
     return fig
 
 
-def plot_population_statistics(stats_history: List[Dict], save_path: str = None):
-    """Plot population-level statistics.
+def plot_energy_over_time(
+    log_file: str,
+    organism_ids: Optional[List[int]] = None,
+    figsize: Tuple[int, int] = (12, 6)
+) -> plt.Figure:
+    """Plot energy levels over time from HDF5 log file.
     
     Args:
-        stats_history: List of statistics dictionaries
-        save_path: Path to save figure (optional)
+        log_file: Path to HDF5 simulation log file
+        organism_ids: List of organism IDs to plot (None = all)
+        figsize: Figure size (width, height)
+        
+    Returns:
+        Matplotlib figure object
+        
+    Example:
+        >>> fig = plot_energy_over_time('results/simulation_001.hdf5')
+        >>> fig.savefig('energy_plot.png')
     """
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig, ax = plt.subplots(figsize=figsize)
     
-    timesteps = list(range(len(stats_history)))
+    with h5py.File(log_file, 'r') as f:
+        num_organisms = len(f['organisms'].keys())
+        
+        if organism_ids is None:
+            organism_ids = list(range(num_organisms))
+        
+        colors = plt.cm.tab10(np.linspace(0, 1, len(organism_ids)))
+        
+        for idx, org_id in enumerate(organism_ids):
+            org_key = f'organism_{org_id}'
+            if org_key in f['organisms']:
+                energies = f['organisms'][org_key]['energies'][:]
+                timesteps = np.arange(len(energies))
+                alive = f['organisms'][org_key]['alive'][:]
+                
+                # Plot energy line
+                ax.plot(
+                    timesteps, energies,
+                    label=f'Organism {org_id}',
+                    color=colors[idx],
+                    linewidth=2,
+                    alpha=0.8
+                )
+                
+                # Mark death point if applicable
+                if not alive[-1]:
+                    death_timestep = np.where(~alive)[0][0]
+                    ax.scatter(
+                        death_timestep, energies[death_timestep],
+                        color=colors[idx], s=100, marker='x',
+                        linewidths=3, zorder=5
+                    )
+                    ax.annotate(
+                        'Death', (death_timestep, energies[death_timestep]),
+                        xytext=(10, 10), textcoords='offset points',
+                        fontsize=9, color=colors[idx]
+                    )
     
-    # Alive count
-    alive_counts = [s['alive_count'] for s in stats_history]
-    axes[0, 0].plot(timesteps, alive_counts, linewidth=2)
-    axes[0, 0].set_xlabel('Timestep')
-    axes[0, 0].set_ylabel('Alive Count')
-    axes[0, 0].set_title('Population Size Over Time')
-    axes[0, 0].grid(True, alpha=0.3)
-    
-    # Average energy
-    avg_energies = [s['avg_energy'] for s in stats_history]
-    axes[0, 1].plot(timesteps, avg_energies, linewidth=2, color='orange')
-    axes[0, 1].set_xlabel('Timestep')
-    axes[0, 1].set_ylabel('Average Energy')
-    axes[0, 1].set_title('Average Energy Over Time')
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # Average age
-    avg_ages = [s['avg_age'] for s in stats_history]
-    axes[1, 0].plot(timesteps, avg_ages, linewidth=2, color='green')
-    axes[1, 0].set_xlabel('Timestep')
-    axes[1, 0].set_ylabel('Average Age')
-    axes[1, 0].set_title('Average Age Over Time')
-    axes[1, 0].grid(True, alpha=0.3)
-    
-    # Summary text
-    axes[1, 1].axis('off')
-    summary_text = f"""
-    Final Statistics:
-    
-    Alive: {alive_counts[-1]}/{stats_history[0]['total_organisms']}
-    Avg Energy: {avg_energies[-1]:.2f}
-    Avg Age: {avg_ages[-1]:.2f}
-    Max Age: {max(avg_ages):.2f}
-    """
-    axes[1, 1].text(0.1, 0.5, summary_text, fontsize=14, 
-                   verticalalignment='center', family='monospace')
-    
-    plt.tight_layout()
-    
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    
-    return fig
-
-
-def plot_comparison(condition_a_data: Dict, condition_b_data: Dict, 
-                   metric: str = 'avg_energy', save_path: str = None):
-    """Plot comparison between two conditions.
-    
-    Args:
-        condition_a_data: Data from condition A
-        condition_b_data: Data from condition B
-        metric: Metric to compare
-        save_path: Path to save figure (optional)
-    """
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Extract metric over time
-    timesteps_a = list(range(len(condition_a_data)))
-    values_a = [d[metric] for d in condition_a_data]
-    
-    timesteps_b = list(range(len(condition_b_data)))
-    values_b = [d[metric] for d in condition_b_data]
-    
-    ax.plot(timesteps_a, values_a, label='Survival Only', linewidth=2, alpha=0.8)
-    ax.plot(timesteps_b, values_b, label='Dual Process', linewidth=2, alpha=0.8)
-    
-    ax.set_xlabel('Timestep')
-    ax.set_ylabel(metric.replace('_', ' ').title())
-    ax.set_title(f'Comparison: {metric.replace("_", " ").title()}')
-    ax.legend()
+    ax.set_xlabel('Timestep', fontsize=12)
+    ax.set_ylabel('Energy', fontsize=12)
+    ax.set_title('Organism Energy Over Time', fontsize=14, fontweight='bold')
+    ax.legend(loc='best')
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
+    return fig
+
+
+def create_animation(
+    log_file: str,
+    output_file: str = "simulation.mp4",
+    fps: int = 10,
+    interval: int = 100,
+    figsize: Tuple[int, int] = (10, 10)
+) -> str:
+    """Create animated video from HDF5 simulation log.
     
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    Args:
+        log_file: Path to HDF5 simulation log file
+        output_file: Output video file path
+        fps: Frames per second for video
+        interval: Milliseconds between frames
+        figsize: Figure size (width, height)
+        
+    Returns:
+        Path to created animation file
+        
+    Example:
+        >>> create_animation('results/simulation_001.hdf5', 'animation.mp4')
+        'animation.mp4'
+    """
+    # Read all data from HDF5
+    with h5py.File(log_file, 'r') as f:
+        # Get grid size from config or default
+        config_str = f.attrs.get('config', '{}')
+        if isinstance(config_str, bytes):
+            config_str = config_str.decode('utf-8')
+        
+        import json
+        try:
+            config = json.loads(config_str)
+            grid_size = config.get('environment', {}).get('grid_size', 20)
+        except:
+            grid_size = 20
+        
+        num_organisms = len(f['organisms'].keys())
+        total_timesteps = len(f['organisms']['organism_0']['positions'])
+        
+        # Load all organism data
+        organism_data = []
+        for org_id in range(num_organisms):
+            org_key = f'organism_{org_id}'
+            organism_data.append({
+                'positions': f['organisms'][org_key]['positions'][:],
+                'energies': f['organisms'][org_key]['energies'][:],
+                'alive': f['organisms'][org_key]['alive'][:]
+            })
+        
+        # Load food data (padded array)
+        food_data = f['environment']['food_positions'][:]
     
+    # Create figure and axis
+    fig, ax = plt.subplots(figsize=figsize)
+    colors = plt.cm.tab10(np.linspace(0, 1, num_organisms))
+    
+    def init():
+        """Initialize animation."""
+        ax.clear()
+        ax.set_xlim(-0.5, grid_size - 0.5)
+        ax.set_ylim(-0.5, grid_size - 0.5)
+        ax.set_aspect('equal')
+        ax.set_facecolor('#f0f0f0')
+        return []
+    
+    def animate(frame):
+        """Update function for animation."""
+        ax.clear()
+        ax.set_xlim(-0.5, grid_size - 0.5)
+        ax.set_ylim(-0.5, grid_size - 0.5)
+        ax.set_aspect('equal')
+        ax.set_facecolor('#f0f0f0')
+        
+        # Draw grid
+        for i in range(grid_size + 1):
+            ax.axhline(i - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+            ax.axvline(i - 0.5, color='gray', linewidth=0.5, alpha=0.3)
+        
+        # Draw food
+        frame_food = food_data[frame]
+        for fx, fy in frame_food:
+            if fx > 0 or fy > 0:  # Check for valid food (padding uses 0,0)
+                rect = Rectangle(
+                    (fx - 0.4, fy - 0.4), 0.8, 0.8,
+                    facecolor='green', edgecolor='darkgreen',
+                    linewidth=2, alpha=0.7
+                )
+                ax.add_patch(rect)
+        
+        # Draw organisms
+        for org_id, (org_data, color) in enumerate(zip(organism_data, colors)):
+            if org_data['alive'][frame]:
+                x, y = org_data['positions'][frame]
+                energy = org_data['energies'][frame]
+                
+                # Circle for organism
+                circle = Circle(
+                    (x, y), 0.35,
+                    facecolor=color, edgecolor='black',
+                    linewidth=2, alpha=0.8
+                )
+                ax.add_patch(circle)
+                
+                # Organism ID
+                ax.text(
+                    x, y, str(org_id),
+                    ha='center', va='center',
+                    fontsize=10, fontweight='bold', color='white'
+                )
+        
+        ax.set_title(f'Simulation - Timestep {frame}/{total_timesteps-1}',
+                    fontsize=14, fontweight='bold')
+        ax.set_xlabel('X Position')
+        ax.set_ylabel('Y Position')
+        
+        return []
+    
+    # Create animation
+    anim = animation.FuncAnimation(
+        fig, animate, init_func=init,
+        frames=total_timesteps, interval=interval,
+        blit=False, repeat=False
+    )
+    
+    # Save animation
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    Writer = animation.writers['ffmpeg']
+    writer = Writer(fps=fps, metadata=dict(artist='Ethical-SNN-Research'), bitrate=1800)
+    anim.save(str(output_path), writer=writer)
+    
+    plt.close(fig)
+    
+    return str(output_path)
+
+
+def plot_action_distribution(
+    log_file: str,
+    organism_id: int = 0,
+    figsize: Tuple[int, int] = (10, 6)
+) -> plt.Figure:
+    """Plot distribution of actions taken by an organism.
+    
+    Args:
+        log_file: Path to HDF5 simulation log file
+        organism_id: ID of organism to analyze
+        figsize: Figure size (width, height)
+        
+    Returns:
+        Matplotlib figure object
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    with h5py.File(log_file, 'r') as f:
+        org_key = f'organism_{organism_id}'
+        actions = f['organisms'][org_key]['actions'][:]
+        
+        # Decode byte strings if needed
+        if actions.dtype.kind == 'S':
+            actions = [a.decode('utf-8') for a in actions]
+        
+        # Count actions
+        unique_actions, counts = np.unique(actions, return_counts=True)
+        
+        # Create bar plot
+        ax.bar(unique_actions, counts, color='steelblue', alpha=0.7)
+        ax.set_xlabel('Action', fontsize=12)
+        ax.set_ylabel('Count', fontsize=12)
+        ax.set_title(f'Action Distribution - Organism {organism_id}',
+                    fontsize=14, fontweight='bold')
+        ax.tick_params(axis='x', rotation=45)
+        
+        # Add count labels on bars
+        for i, (action, count) in enumerate(zip(unique_actions, counts)):
+            ax.text(i, count, str(count), ha='center', va='bottom')
+    
+    plt.tight_layout()
     return fig
