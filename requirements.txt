@@ -11,6 +11,8 @@ snntorch>=0.7.0
 
 # Experiment management
 pyyaml>=6.0
+pydantic>=2.0.0
+h5py>=3.8.0
 tqdm>=4.65.0
 
 # Visualization

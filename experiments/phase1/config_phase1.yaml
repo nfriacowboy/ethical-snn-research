@@ -1,37 +1,57 @@
-# Phase 1 Configuration
+# Phase 1 Configuration - Baseline Experiment
 # Dual-Process vs Survival-Only Comparison
+#
+# This configuration follows the preregistered protocol for Phase 1
+# experiments investigating ethical behavior in minimal SNNs.
 
-# Simulation parameters
-architecture: single  # Override: 'single' for Condition A, 'dual' for Condition B
-num_organisms: 10
-grid_size: [50, 50]
-max_timesteps: 1000
-checkpoint_frequency: 100
+experiment_name: "phase1_baseline"
 
 # Environment parameters
-food_spawn_rate: 0.02
-energy_decay: 1.0
-collision_penalty: 10.0
+environment:
+  grid_size: 20  # 20x20 discrete grid with toroidal topology
+  num_food: 5  # Number of food items in environment
+  food_respawn_rate: 0.1  # Probability of food respawning per timestep
+  food_energy_value: 20  # Energy gained from consuming food
 
-# Ethical processing (for dual-process only)
-ethical_weight: 0.5
+# Organism parameters
+organism:
+  initial_energy: 100  # Starting energy level
+  energy_decay_rate: 1.0  # Energy lost per timestep
+  max_energy: 150  # Maximum energy capacity
+  attack_cost: 10  # Energy cost to attempt attack
+  attack_damage: 30  # Damage dealt by successful attack
 
-# Network architecture
-snn_input_size: 128
-snn_hidden_size: 256
-snn_output_size: 8
-ethical_input_size: 64
-ethical_hidden_size: 128
+# Survival SNN architecture (SNN-S)
+snn_survival:
+  input_size: 25  # 5x5 local view (radius=2)
+  hidden_size: 50  # Hidden layer neurons
+  output_size: 5  # Actions: NORTH, SOUTH, EAST, WEST, EAT/ATTACK
+  learning_rate: 0.001  # Learning rate for STDP
+  beta: 0.9  # Decay rate for LIF neurons
+  num_steps: 10  # Timesteps per forward pass
 
-# Training parameters (for pre-training ethical network)
-stdp_learning_rate: 0.01
-supervised_learning_rate: 0.001
-batch_size: 32
-num_epochs: 50
+# Ethical SNN architecture (SNN-E) - Only for dual-process organisms
+# Uncomment for Condition B (Dual-Process)
+# snn_ethical:
+#   input_size: 30  # Context: self_energy, other_energy, food_available, etc.
+#   hidden_size: 40
+#   output_size: 1  # Binary: allow/veto action
+#   learning_rate: 0.001
+#   beta: 0.9
+#   num_steps: 10
 
-# Reproducibility
-seed: null  # Will use run_id if null
+# STDP learning parameters
+stdp:
+  a_plus: 0.01  # LTP learning rate
+  a_minus: 0.01  # LTD learning rate
+  tau_plus: 20.0  # LTP time constant (ms)
+  tau_minus: 20.0  # LTD time constant (ms)
 
-# Logging
-verbose: true
-save_checkpoints: true
+# Simulation parameters
+simulation:
+  max_timesteps: 1000  # Maximum simulation duration
+  random_seed: 42  # Random seed for reproducibility
+  device: "cpu"  # "cpu" or "cuda" for GPU
+  num_organisms: 2  # Number of organisms (typically 2 for Phase 1)
+  log_frequency: 1  # Log state every N timesteps
+
