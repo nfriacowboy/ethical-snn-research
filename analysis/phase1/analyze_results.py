@@ -263,9 +263,27 @@ def save_analysis_report(
         test_results: Statistical test results
         output_dir: Directory to save report
     """
+    # Convert numpy bool to Python bool
+    def convert_to_json_serializable(obj):
+        """Convert numpy types to Python native types."""
+        import numpy as np
+        if isinstance(obj, dict):
+            return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_json_serializable(v) for v in obj]
+        elif isinstance(obj, (np.bool_, np.bool)):
+            return bool(obj)
+        elif isinstance(obj, (np.integer, np.int64, np.int32)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64, np.float32)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return obj
+    
     report = {
         'aggregated_results': data['aggregated'],
-        'statistical_tests': test_results,
+        'statistical_tests': convert_to_json_serializable(test_results),
         'num_runs_a': len(data['condition_a']),
         'num_runs_b': len(data['condition_b'])
     }
