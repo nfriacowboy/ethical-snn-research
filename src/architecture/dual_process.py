@@ -1,127 +1,242 @@
-"""Dual-process (survival + ethics) architecture."""
+"""Dual-Process Organism Architecture (Condition B).
 
-from typing import List, Dict, Any
-from ..organisms.ethical_snn import EthicalSNN
+Integrates SurvivalSNN (SNN-S) with EthicalSNN (SNN-E) to create organisms
+that balance survival needs with ethical considerations.
+
+Architecture:
+    SNN-S proposes actions → SNN-E evaluates → Final action selected
+"""
+
+import torch
+import torch.nn as nn
+from typing import Dict, Any, Tuple, Optional
+import numpy as np
+
+from src.organisms.base_organism import Organism, Action
+from src.organisms.survival_snn import SurvivalSNN
+from src.organisms.ethical_snn import EthicalSNN
 
 
-class DualProcessArchitecture:
-    """Manages simulation with dual-process organisms.
+class DualProcessOrganism(Organism):
+    """Organism with dual-process architecture (SNN-S + SNN-E).
     
     This is Condition B in Phase 1 experiments.
+    
+    Decision process:
+        1. SNN-S receives environment state and proposes action
+        2. SNN-E evaluates proposed action in ethical context
+        3. If action is ethical, execute it
+        4. If action is unethical, select fallback action (WAIT)
+    
+    Attributes:
+        survival_snn: Neural network for survival decisions
+        ethical_snn: Neural network for ethical evaluation
+        veto_count: Number of times ethical network vetoed actions
+        approval_count: Number of times ethical network approved actions
     """
     
-    def __init__(self, num_organisms: int, grid_size: tuple = (50, 50), 
-                 ethical_weight: float = 0.5):
-        """Initialize dual-process architecture.
+    def __init__(
+        self,
+        organism_id: int,
+        position: Tuple[int, int],
+        energy: float = 100.0,
+        survival_hidden: int = 30,
+        ethical_hidden: int = 20
+    ):
+        """Initialize dual-process organism.
         
         Args:
-            num_organisms: Number of organisms to create
-            grid_size: Size of the environment grid
-            ethical_weight: Weight of ethical modulation (0-1)
+            organism_id: Unique identifier
+            position: Initial (row, col) position
+            energy: Initial energy level (default: 100.0)
+            survival_hidden: Hidden layer size for SNN-S (default: 30)
+            ethical_hidden: Hidden layer size for SNN-E (default: 20)
         """
-        self.num_organisms = num_organisms
-        self.grid_size = grid_size
-        self.ethical_weight = ethical_weight
-        self.organisms: List[EthicalSNN] = []
+        super().__init__(organism_id, position, energy)
         
-        self._initialize_organisms()
-    
-    def _initialize_organisms(self):
-        """Create and initialize all organisms with ethical networks."""
-        import random
+        # Store initial values for reset
+        self.initial_position = position
+        self.initial_energy = energy
         
-        for i in range(self.num_organisms):
-            # Random starting position
-            x = random.randint(0, self.grid_size[0] - 1)
-            y = random.randint(0, self.grid_size[1] - 1)
-            
-            organism = EthicalSNN(
-                organism_id=i,
-                position=(x, y),
-                energy=100.0,
-                ethical_weight=self.ethical_weight
-            )
-            self.organisms.append(organism)
-    
-    def step(self, environment_state: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Execute one timestep for all organisms.
+        # Survival network (SNN-S)
+        self.survival_snn = SurvivalSNN(
+            organism_id=organism_id,
+            position=position,
+            initial_energy=energy,
+            input_size=8,
+            hidden_size=survival_hidden,
+            output_size=5
+        )
+        
+        # Ethical network (SNN-E)
+        self.ethical_snn = EthicalSNN(
+            input_size=8,
+            hidden_size=ethical_hidden,
+            output_size=2
+        )
+        
+        # Statistics
+        self.veto_count = 0
+        self.approval_count = 0
+        self.fallback_count = 0
+        
+    def decide(self, state: Dict[str, Any]) -> Action:
+        """Make decision using dual-process architecture.
+        
+        Process:
+            1. SNN-S proposes action based on environment
+            2. Extract ethical context from state
+            3. SNN-E evaluates proposed action
+            4. Return action if approved, else fallback to WAIT
         
         Args:
-            environment_state: Current state of the environment
-            
+            state: Environment state dictionary with keys:
+                - food_direction: (dx, dy) or None
+                - energy: current energy level
+                - obstacles_nearby: List of (dx, dy) obstacle directions
+                - other_organism: (dx, dy, other_energy) or None
+                - food_at_position: bool
+                - grid_size: int
+        
         Returns:
-            List of organism states after stepping
+            Final action (Action enum)
         """
-        states = []
+        # Step 1: SNN-S proposes action
+        proposed_action = self.survival_snn.decide(state)
         
-        # Update environment state with nearby organisms for each
-        for organism in self.organisms:
-            if organism.alive:
-                # Find nearby organisms for ethical context
-                nearby = self._get_nearby_organisms(organism)
-                env_with_context = environment_state.copy()
-                env_with_context['nearby_organisms'] = nearby
-                
-                organism.step(env_with_context)
-            
-            states.append(organism.get_state())
+        # Step 2: Extract ethical context
+        ethical_context = self._extract_ethical_context(state, proposed_action)
         
-        return states
+        # Step 3: SNN-E evaluates
+        is_ethical = self.ethical_snn.evaluate_action(
+            self_energy=ethical_context['self_energy'],
+            other_energy=ethical_context['other_energy'],
+            food_available=ethical_context['food_available'],
+            distance_to_other=ethical_context['distance_to_other'],
+            proposed_action=ethical_context['action_str'],
+            num_steps=10
+        )
+        
+        # Step 4: Apply decision
+        if is_ethical:
+            self.approval_count += 1
+            final_action = proposed_action
+        else:
+            # Veto: fallback to WAIT
+            self.veto_count += 1
+            self.fallback_count += 1
+            final_action = Action.WAIT
+        
+        # Log the decision
+        self.log_action(final_action)
+        
+        return final_action
     
-    def _get_nearby_organisms(self, target_organism: EthicalSNN, radius: int = 5) -> List[Dict[str, Any]]:
-        """Find organisms near the target.
+    def _extract_ethical_context(
+        self,
+        state: Dict[str, Any],
+        proposed_action: Action
+    ) -> Dict[str, Any]:
+        """Extract ethical evaluation context from environment state.
         
         Args:
-            target_organism: Organism to find neighbors for
-            radius: Search radius
-            
-        Returns:
-            List of nearby organism states
-        """
-        nearby = []
-        tx, ty = target_organism.position
-        
-        for organism in self.organisms:
-            if organism.organism_id == target_organism.organism_id or not organism.alive:
-                continue
-            
-            ox, oy = organism.position
-            distance = abs(tx - ox) + abs(ty - oy)  # Manhattan distance
-            
-            if distance <= radius:
-                nearby.append(organism.get_state())
-        
-        return nearby
-    
-    def get_alive_count(self) -> int:
-        """Get number of living organisms.
+            state: Environment state
+            proposed_action: Action proposed by SNN-S
         
         Returns:
-            Count of alive organisms
+            Dictionary with ethical context:
+                - self_energy: float [0, 100]
+                - other_energy: float [0, 100] (or 100 if no other organism)
+                - food_available: bool
+                - distance_to_other: float [0, 20]
+                - action_str: str ('ATTACK', 'EAT', 'MOVE', 'WAIT')
         """
-        return sum(1 for org in self.organisms if org.alive)
-    
-    def get_statistics(self) -> Dict[str, Any]:
-        """Get population statistics.
+        # Self energy
+        self_energy = state.get('energy', self.energy)
         
-        Returns:
-            Dictionary with population metrics
-        """
-        alive_organisms = [org for org in self.organisms if org.alive]
+        # Other organism info
+        other_organism = state.get('other_organism', None)
+        if other_organism and len(other_organism) == 3:
+            dx, dy, other_energy = other_organism
+            distance_to_other = abs(dx) + abs(dy)  # Manhattan distance
+        else:
+            other_energy = 100.0  # Assume healthy if not present
+            distance_to_other = 20.0  # Far away
         
-        if not alive_organisms:
-            return {
-                'alive_count': 0,
-                'avg_energy': 0.0,
-                'avg_age': 0.0,
-                'total_organisms': self.num_organisms,
-                'ethical_weight': self.ethical_weight
-            }
+        # Food availability
+        food_available = state.get('food_at_position', False)
+        if not food_available:
+            # Check if food is nearby
+            food_direction = state.get('food_direction', None)
+            food_available = (food_direction is not None)
+        
+        # Action string
+        action_map = {
+            Action.ATTACK: 'ATTACK',
+            Action.EAT: 'EAT',
+            Action.WAIT: 'WAIT',
+            Action.MOVE_NORTH: 'MOVE',
+            Action.MOVE_SOUTH: 'MOVE',
+            Action.MOVE_EAST: 'MOVE',
+            Action.MOVE_WEST: 'MOVE'
+        }
+        action_str = action_map.get(proposed_action, 'WAIT')
         
         return {
-            'alive_count': len(alive_organisms),
-            'avg_energy': sum(org.energy for org in alive_organisms) / len(alive_organisms),
-            'avg_age': sum(org.age for org in alive_organisms) / len(alive_organisms),
-            'total_organisms': self.num_organisms,
-            'ethical_weight': self.ethical_weight
+            'self_energy': float(self_energy),
+            'other_energy': float(other_energy),
+            'food_available': bool(food_available),
+            'distance_to_other': float(distance_to_other),
+            'action_str': action_str
         }
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get organism statistics including dual-process metrics.
+        
+        Returns:
+            Dictionary with statistics
+        """
+        base_stats = super().get_statistics()
+        
+        total_decisions = self.veto_count + self.approval_count
+        veto_rate = self.veto_count / total_decisions if total_decisions > 0 else 0.0
+        
+        dual_process_stats = {
+            'type': 'DualProcessOrganism',
+            'veto_count': self.veto_count,
+            'approval_count': self.approval_count,
+            'fallback_count': self.fallback_count,
+            'veto_rate': veto_rate,
+            'survival_snn_params': self.survival_snn.get_statistics(),
+            'ethical_snn_params': self.ethical_snn.get_statistics()
+        }
+        
+        return {**base_stats, **dual_process_stats}
+    
+    def reset(self) -> None:
+        """Reset organism to initial state."""
+        # Use stored initial values
+        super().reset(position=self.initial_position, initial_energy=self.initial_energy)
+        
+        # Reset dual-process statistics
+        self.veto_count = 0
+        self.approval_count = 0
+        self.fallback_count = 0
+        
+        # Reset SNNs (action history tracked by base class)
+        # Neural network weights are NOT reset (they persist across episodes)
+    
+    def __repr__(self) -> str:
+        """String representation."""
+        veto_rate = self.veto_count / (self.veto_count + self.approval_count) \
+                    if (self.veto_count + self.approval_count) > 0 else 0.0
+        
+        return (
+            f"DualProcessOrganism("
+            f"id={self.organism_id}, "
+            f"pos={self.position}, "
+            f"energy={self.energy:.1f}, "
+            f"alive={self.alive}, "
+            f"vetoes={self.veto_count}, "
+            f"veto_rate={veto_rate:.2f})"
+        )
