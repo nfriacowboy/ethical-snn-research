@@ -1,9 +1,14 @@
 """Ethical training dataset generation for SNN-E pre-training.
 
-Generates 1000 synthetic scenarios with ethical labels based on:
-- Resource scarcity (self vs other energy levels)
-- Harm potential (attack when other is vulnerable)
-- Food availability context
+Generates 1000 synthetic scenarios with ethical labels based on MACHIAVELLI taxonomy:
+- UNNECESSARY_HARM: Attacks without strategic necessity (20%)
+- RESOURCE_HOARDING: Monopolizing resources (15%)
+- UNFAIR_COMPETITION: Exploiting power imbalances (20%)
+- DECEPTIVE_ACTION: Misleading behavior (10%)
+- WASTEFUL_AGGRESSION: Violence without benefit (10%)
+- ETHICAL_POSITIVE: Pro-social behaviors (25%)
+
+Adapted from: Pan et al. (2023) MACHIAVELLI Benchmark, ICML.
 """
 
 from dataclasses import dataclass
@@ -12,19 +17,32 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 
+from src.utils.ethical_categories import (
+    ActionType,
+    EthicalContext,
+    EthicalEvaluation,
+    EthicalEvaluator,
+    EthicalPrinciple,
+    EthicalViolation,
+)
+
 
 @dataclass
 class EthicalScenario:
-    """Single ethical scenario with state and label.
+    """Single ethical scenario with state and label using MACHIAVELLI taxonomy.
 
     Attributes:
         self_energy: Organism's own energy level [0, 100]
         other_energy: Other organism's energy level [0, 100]
         food_available: Whether food is present in environment
-        distance_to_other: Distance to other organism [0, 20]
+        distance_to_other: Distance to other organism [0, 28]
+        distance_to_food: Distance to nearest food [0, 28] (optional)
         action: Proposed action ('ATTACK', 'EAT', 'MOVE', 'WAIT')
         is_ethical: Ground truth label (True=ethical, False=unethical)
-        scenario_type: Category for analysis
+        violation: Type of ethical violation (None if ethical)
+        principle: Positive ethical principle (None if unethical)
+        disutility: Harm caused by action [0, ∞)
+        reasoning: Explanation of ethical judgment
     """
 
     self_energy: float
@@ -33,7 +51,22 @@ class EthicalScenario:
     distance_to_other: float
     action: str
     is_ethical: bool
-    scenario_type: str
+    violation: Optional[str] = None  # EthicalViolation enum value
+    principle: Optional[str] = None  # EthicalPrinciple enum value
+    distance_to_food: Optional[float] = None
+    disutility: float = 0.0
+    reasoning: str = ""
+
+    # Legacy field for backward compatibility
+    @property
+    def scenario_type(self) -> str:
+        """Legacy property mapping to violation or principle."""
+        if self.violation:
+            return self.violation
+        elif self.principle:
+            return self.principle
+        else:
+            return "neutral_action"
 
     def to_feature_vector(self) -> np.ndarray:
         """Convert scenario to 8-dimensional feature vector.
@@ -68,8 +101,16 @@ class EthicalScenario:
             "other_energy": float(self.other_energy),
             "food_available": bool(self.food_available),
             "distance_to_other": float(self.distance_to_other),
+            "distance_to_food": float(self.distance_to_food)
+            if self.distance_to_food is not None
+            else None,
             "action": self.action,
             "is_ethical": bool(self.is_ethical),
+            "violation": self.violation,
+            "principle": self.principle,
+            "disutility": float(self.disutility),
+            "reasoning": self.reasoning,
+            # Legacy field
             "scenario_type": self.scenario_type,
         }
 
@@ -77,12 +118,15 @@ class EthicalScenario:
 class EthicalDatasetGenerator:
     """Generate synthetic ethical scenarios for SNN-E training.
 
-    Implements ethical rules from preregistration:
-    1. Don't attack when self has high energy and other has low energy
-    2. Don't attack when food is readily available (non-zero-sum)
-    3. Cooperation when both can benefit (implicit in scenarios)
+    Implements MACHIAVELLI-inspired taxonomy adapted for spatial organisms:
+    - UNNECESSARY_HARM (20%): Attacks without necessity
+    - RESOURCE_HOARDING (15%): Monopolizing resources
+    - UNFAIR_COMPETITION (20%): Exploiting power imbalances
+    - DECEPTIVE_ACTION (10%): Misleading behavior
+    - WASTEFUL_AGGRESSION (10%): Violence without benefit
+    - ETHICAL_POSITIVE (25%): Pro-social behaviors
 
-    Generates balanced dataset with ~33% unethical, ~33% neutral, ~33% ethical.
+    Reference: Pan et al. (2023) MACHIAVELLI Benchmark, ICML.
     """
 
     def __init__(self, num_scenarios: int = 1000, seed: int = 42):
@@ -96,136 +140,335 @@ class EthicalDatasetGenerator:
         self.seed = seed
         self.rng = np.random.RandomState(seed)
         self.scenarios: List[EthicalScenario] = []
+        self.evaluator = EthicalEvaluator()
 
     def generate(self) -> List[EthicalScenario]:
         """Generate complete dataset of ethical scenarios.
+
+        Distribution (MACHIAVELLI-inspired):
+        - UNNECESSARY_HARM: 200 scenarios (20%)
+        - UNFAIR_COMPETITION: 200 scenarios (20%)
+        - RESOURCE_HOARDING: 150 scenarios (15%)
+        - DECEPTIVE_ACTION: 100 scenarios (10%)
+        - WASTEFUL_AGGRESSION: 100 scenarios (10%)
+        - ETHICAL_POSITIVE: 250 scenarios (25%)
 
         Returns:
             List of EthicalScenario objects (length: num_scenarios)
         """
         self.scenarios = []
 
-        # Generate equal proportions of each scenario type
-        scenarios_per_type = self.num_scenarios // 3
+        # Calculate scenario counts per category
+        unnecessary_harm_count = int(self.num_scenarios * 0.20)
+        unfair_competition_count = int(self.num_scenarios * 0.20)
+        resource_hoarding_count = int(self.num_scenarios * 0.15)
+        deceptive_action_count = int(self.num_scenarios * 0.10)
+        wasteful_aggression_count = int(self.num_scenarios * 0.10)
+        ethical_positive_count = self.num_scenarios - (
+            unnecessary_harm_count
+            + unfair_competition_count
+            + resource_hoarding_count
+            + deceptive_action_count
+            + wasteful_aggression_count
+        )
 
-        # Type 1: Attack scenarios (ethical vs unethical attacks)
-        for _ in range(scenarios_per_type):
-            self.scenarios.append(self._generate_attack_scenario())
+        # Generate each category
+        for _ in range(unnecessary_harm_count):
+            self.scenarios.append(
+                self._generate_violation_scenario(EthicalViolation.UNNECESSARY_HARM)
+            )
 
-        # Type 2: Resource competition (with food available)
-        for _ in range(scenarios_per_type):
-            self.scenarios.append(self._generate_resource_scenario())
+        for _ in range(unfair_competition_count):
+            self.scenarios.append(
+                self._generate_violation_scenario(EthicalViolation.UNFAIR_COMPETITION)
+            )
 
-        # Type 3: Neutral actions (movement, eating when alone)
-        for _ in range(self.num_scenarios - 2 * scenarios_per_type):
-            self.scenarios.append(self._generate_neutral_scenario())
+        for _ in range(resource_hoarding_count):
+            self.scenarios.append(
+                self._generate_violation_scenario(EthicalViolation.RESOURCE_HOARDING)
+            )
+
+        for _ in range(deceptive_action_count):
+            self.scenarios.append(
+                self._generate_violation_scenario(EthicalViolation.DECEPTIVE_ACTION)
+            )
+
+        for _ in range(wasteful_aggression_count):
+            self.scenarios.append(
+                self._generate_violation_scenario(EthicalViolation.WASTEFUL_AGGRESSION)
+            )
+
+        for _ in range(ethical_positive_count):
+            self.scenarios.append(self._generate_ethical_scenario())
 
         # Shuffle scenarios
         self.rng.shuffle(self.scenarios)
 
         return self.scenarios
 
-    def _generate_attack_scenario(self) -> EthicalScenario:
-        """Generate attack scenario with ethical judgment.
+    def _generate_violation_scenario(
+        self, violation_type: EthicalViolation
+    ) -> EthicalScenario:
+        """Generate scenario with specific ethical violation.
 
-        Ethical rules:
-        - Unethical: Attack when other_energy < 30 and self_energy > 60
-        - Ethical: Don't attack (or attack only when self_energy < 30)
-        - Neutral: Attack when both have moderate energy
+        Args:
+            violation_type: Type of violation to generate
 
         Returns:
-            EthicalScenario with action='ATTACK'
+            EthicalScenario with violation
         """
-        self_energy = self.rng.uniform(10, 100)
-        other_energy = self.rng.uniform(10, 100)
-        food_available = self.rng.choice([True, False])
-        distance = self.rng.uniform(1, 3)  # Close enough to attack
-
-        # Determine ethicality based on energy asymmetry
-        if self_energy > 60 and other_energy < 30:
-            # Strong attacking weak = unethical
-            is_ethical = False
-            scenario_type = "unethical_attack"
-        elif food_available and self_energy > 50:
-            # Attack when food available = unethical (non-zero-sum)
-            is_ethical = False
-            scenario_type = "unnecessary_attack"
-        elif self_energy < 30 and other_energy > 60:
-            # Weak attacking strong (desperate) = ethically neutral
-            is_ethical = True
-            scenario_type = "desperate_attack"
+        if violation_type == EthicalViolation.UNNECESSARY_HARM:
+            return self._generate_unnecessary_harm()
+        elif violation_type == EthicalViolation.UNFAIR_COMPETITION:
+            return self._generate_unfair_competition()
+        elif violation_type == EthicalViolation.RESOURCE_HOARDING:
+            return self._generate_resource_hoarding()
+        elif violation_type == EthicalViolation.DECEPTIVE_ACTION:
+            return self._generate_deceptive_action()
+        elif violation_type == EthicalViolation.WASTEFUL_AGGRESSION:
+            return self._generate_wasteful_aggression()
         else:
-            # Comparable energy levels = neutral
-            is_ethical = True
-            scenario_type = "fair_conflict"
+            raise ValueError(f"Unknown violation type: {violation_type}")
+
+    def _generate_unnecessary_harm(self) -> EthicalScenario:
+        """Generate UNNECESSARY_HARM scenario: attacking when unnecessary.
+        
+        Note: Must avoid triggering higher-priority violations:
+        - No recent_movement="toward_food" (would be deceptive_action)
+        - No self_energy < 20 (would be wasteful_aggression)
+        - energy_diff must be <= 40 (else unfair_competition)
+        
+        Two valid cases:
+        1. Strong vs weak but energy_diff <= 40
+        2. Attack when food available with energy_diff < 20
+        """
+        if self.rng.rand() < 0.5:
+            # Case 1: Strong vs weak (70+ vs <30) but keep diff <= 40
+            self_energy = self.rng.uniform(71, 80)  # Above 70
+            other_energy = self.rng.uniform(30, 39)  # Below 40 to ensure diff <= 50
+            # Actually, let's be safer: self - other <= 40
+            # If self=80, other must be >= 40 (but rule says <30 for unnecessary_harm)
+            # Let me reconsider: the rule says "self > 70 AND other < 30"
+            # If self=71 and other=29, diff=42 > 40 → unfair_competition
+            # This is tricky! Let's focus on Case 2 instead.
+            pass
+        
+        # Focus on Case 2: Attack when food available
+        self_energy = self.rng.uniform(55, 95)  # Above 50 (rule requirement)
+        other_energy = self.rng.uniform(35, 95)  # Keep diff < 20 for fair competition exception
+        
+        # Ensure energy_diff < 40 to avoid unfair_competition
+        while (self_energy - other_energy) >= 40:
+            self_energy = self.rng.uniform(55, 95)
+            other_energy = self.rng.uniform(35, 95)
+        
+        # Ensure energy_diff >= 20 to trigger unnecessary_harm (avoid fair competition exception)
+        while abs(self_energy - other_energy) < 20:
+            self_energy = self.rng.uniform(55, 95)
+            other_energy = self.rng.uniform(35, 95)
+        
+        food_available = True
+        distance_to_other = self.rng.uniform(1, 3)
+
+        context = EthicalContext(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action=ActionType.ATTACK,
+            # No recent_movement to avoid deceptive_action
+        )
+
+        eval = self.evaluator.evaluate(context)
 
         return EthicalScenario(
             self_energy=self_energy,
             other_energy=other_energy,
             food_available=food_available,
-            distance_to_other=distance,
+            distance_to_other=distance_to_other,
             action="ATTACK",
-            is_ethical=is_ethical,
-            scenario_type=scenario_type,
+            is_ethical=False,
+            violation=eval.violation.value if eval.violation else None,
+            disutility=eval.disutility,
+            reasoning=eval.reasoning,
         )
 
-    def _generate_resource_scenario(self) -> EthicalScenario:
-        """Generate resource-related scenario (eating behavior).
-
-        Ethical rules:
-        - Ethical: Eat when food available (benefits self without harming others)
-        - Unethical: Eating when others are starving nearby (context-dependent)
-
-        Returns:
-            EthicalScenario with action='EAT'
-        """
-        self_energy = self.rng.uniform(20, 90)
-        other_energy = self.rng.uniform(10, 100)
-        food_available = True  # Always true for eat scenarios
-        distance = self.rng.uniform(1, 20)
-
-        # Eating is generally ethical (positive-sum)
-        if other_energy < 20 and distance < 5 and self_energy > 70:
-            # Eating in front of starving other = questionable
-            is_ethical = self.rng.choice([True, False], p=[0.3, 0.7])
-            scenario_type = "selfish_eating"
-        else:
-            is_ethical = True
-            scenario_type = "normal_eating"
-
-        return EthicalScenario(
-            self_energy=self_energy,
-            other_energy=other_energy,
-            food_available=food_available,
-            distance_to_other=distance,
-            action="EAT",
-            is_ethical=is_ethical,
-            scenario_type=scenario_type,
-        )
-
-    def _generate_neutral_scenario(self) -> EthicalScenario:
-        """Generate neutral scenario (movement, waiting).
-
-        These actions have no direct ethical implications.
-
-        Returns:
-            EthicalScenario with action='MOVE' or 'WAIT'
-        """
-        self_energy = self.rng.uniform(20, 100)
-        other_energy = self.rng.uniform(20, 100)
+    def _generate_unfair_competition(self) -> EthicalScenario:
+        """Generate UNFAIR_COMPETITION scenario: exploiting power imbalance."""
+        # Large energy difference (>40)
+        self_energy = self.rng.uniform(70, 100)
+        other_energy = self.rng.uniform(10, 30)  # Ensure diff > 40
         food_available = self.rng.choice([True, False])
-        distance = self.rng.uniform(5, 20)  # Far from others
-        action = self.rng.choice(["MOVE", "WAIT"])
+        distance_to_other = self.rng.uniform(1, 3)
 
-        # Neutral actions are always ethical (no harm)
+        context = EthicalContext(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action=ActionType.ATTACK,
+        )
+
+        eval = self.evaluator.evaluate(context)
+
         return EthicalScenario(
             self_energy=self_energy,
             other_energy=other_energy,
             food_available=food_available,
-            distance_to_other=distance,
+            distance_to_other=distance_to_other,
+            action="ATTACK",
+            is_ethical=False,
+            violation=eval.violation.value if eval.violation else None,
+            disutility=eval.disutility,
+            reasoning=eval.reasoning,
+        )
+
+    def _generate_resource_hoarding(self) -> EthicalScenario:
+        """Generate RESOURCE_HOARDING scenario: eating when satiated while other starves."""
+        self_energy = self.rng.uniform(80, 95)
+        other_energy = self.rng.uniform(10, 20)
+        food_available = True
+        distance_to_other = self.rng.uniform(1, 5)
+
+        context = EthicalContext(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action=ActionType.EAT,
+        )
+
+        eval = self.evaluator.evaluate(context)
+
+        return EthicalScenario(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action="EAT",
+            is_ethical=False,
+            violation=eval.violation.value if eval.violation else None,
+            disutility=eval.disutility,
+            reasoning=eval.reasoning,
+        )
+
+    def _generate_deceptive_action(self) -> EthicalScenario:
+        """Generate DECEPTIVE_ACTION scenario: feinting toward food then attacking."""
+        self_energy = self.rng.uniform(50, 80)
+        other_energy = self.rng.uniform(40, 70)
+        food_available = True
+        distance_to_other = self.rng.uniform(1, 3)
+
+        context = EthicalContext(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action=ActionType.ATTACK,
+            recent_movement="toward_food",
+        )
+
+        eval = self.evaluator.evaluate(context)
+
+        return EthicalScenario(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action="ATTACK",
+            is_ethical=False,
+            violation=eval.violation.value if eval.violation else None,
+            disutility=eval.disutility,
+            reasoning=eval.reasoning,
+        )
+
+    def _generate_wasteful_aggression(self) -> EthicalScenario:
+        """Generate WASTEFUL_AGGRESSION scenario: attacking with critically low energy."""
+        self_energy = self.rng.uniform(5, 20)
+        other_energy = self.rng.uniform(40, 80)
+        food_available = True
+        distance_to_other = self.rng.uniform(1, 3)
+
+        context = EthicalContext(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action=ActionType.ATTACK,
+        )
+
+        eval = self.evaluator.evaluate(context)
+
+        return EthicalScenario(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action="ATTACK",
+            is_ethical=False,
+            violation=eval.violation.value if eval.violation else None,
+            disutility=eval.disutility,
+            reasoning=eval.reasoning,
+        )
+
+    def _generate_ethical_scenario(self) -> EthicalScenario:
+        """Generate ethical positive scenario with pro-social behavior."""
+        scenario_type = self.rng.choice(
+            ["harm_avoidance", "resource_sharing", "fair_competition", "cooperation"]
+        )
+
+        if scenario_type == "harm_avoidance":
+            # Moving away from vulnerable organism
+            self_energy = self.rng.uniform(70, 95)
+            other_energy = self.rng.uniform(10, 30)
+            food_available = self.rng.choice([True, False])
+            distance_to_other = self.rng.uniform(2, 6)
+            action = "MOVE"
+
+        elif scenario_type == "resource_sharing":
+            # Waiting to let starving organism eat
+            self_energy = self.rng.uniform(70, 95)
+            other_energy = self.rng.uniform(10, 30)
+            food_available = True
+            distance_to_other = self.rng.uniform(1, 5)
+            action = "WAIT"
+
+        elif scenario_type == "fair_competition":
+            # Fair fight between equals
+            self_energy = self.rng.uniform(40, 60)
+            other_energy = self.rng.uniform(40, 60)
+            food_available = self.rng.choice([True, False])
+            distance_to_other = self.rng.uniform(1, 3)
+            action = "ATTACK"
+
+        else:  # cooperation
+            # Eating when both healthy
+            self_energy = self.rng.uniform(30, 70)
+            other_energy = self.rng.uniform(50, 80)
+            food_available = True
+            distance_to_other = self.rng.uniform(5, 15)
+            action = "EAT"
+
+        context = EthicalContext(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
+            action=ActionType[action],
+        )
+
+        eval = self.evaluator.evaluate(context)
+
+        return EthicalScenario(
+            self_energy=self_energy,
+            other_energy=other_energy,
+            food_available=food_available,
+            distance_to_other=distance_to_other,
             action=action,
             is_ethical=True,
-            scenario_type="neutral_action",
+            principle=eval.principle.value if eval.principle else None,
+            disutility=0.0,
+            reasoning=eval.reasoning,
         )
 
     def get_statistics(self) -> Dict[str, Any]:
@@ -245,11 +488,14 @@ class EthicalDatasetGenerator:
         for action in ["ATTACK", "EAT", "MOVE", "WAIT"]:
             action_counts[action] = sum(1 for s in self.scenarios if s.action == action)
 
-        scenario_type_counts = {}
+        # Count violations and principles
+        violation_counts = {}
+        principle_counts = {}
         for s in self.scenarios:
-            scenario_type_counts[s.scenario_type] = (
-                scenario_type_counts.get(s.scenario_type, 0) + 1
-            )
+            if s.violation:
+                violation_counts[s.violation] = violation_counts.get(s.violation, 0) + 1
+            if s.principle:
+                principle_counts[s.principle] = principle_counts.get(s.principle, 0) + 1
 
         return {
             "total_scenarios": total,
@@ -257,7 +503,8 @@ class EthicalDatasetGenerator:
             "unethical_count": unethical_count,
             "ethical_ratio": ethical_count / total if total > 0 else 0,
             "action_distribution": action_counts,
-            "scenario_types": scenario_type_counts,
+            "violation_distribution": violation_counts,
+            "principle_distribution": principle_counts,
         }
 
     def to_tensors(self) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -343,6 +590,14 @@ class EthicalDatasetGenerator:
             seed=data["metadata"]["seed"],
         )
 
-        generator.scenarios = [EthicalScenario(**s) for s in data["scenarios"]]
+        # Load scenarios, filtering out 'scenario_type' if present (backward compatibility)
+        scenarios = []
+        for s in data["scenarios"]:
+            # Remove scenario_type if present (it's now a property)
+            s_copy = s.copy()
+            s_copy.pop("scenario_type", None)
+            scenarios.append(EthicalScenario(**s_copy))
+        
+        generator.scenarios = scenarios
 
         return generator

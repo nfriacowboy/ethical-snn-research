@@ -10,6 +10,7 @@ import torch
 
 from src.training.ethical_dataset import (EthicalDatasetGenerator,
                                           EthicalScenario)
+from src.utils.ethical_categories import EthicalViolation, EthicalPrinciple
 
 
 class TestEthicalScenario:
@@ -24,7 +25,10 @@ class TestEthicalScenario:
             distance_to_other=5.0,
             action="ATTACK",
             is_ethical=False,
-            scenario_type="unethical_attack",
+            violation="unfair_competition",
+            principle=None,
+            disutility=5.0,
+            reasoning="Energy difference too large",
         )
 
         assert scenario.self_energy == 80.0
@@ -32,6 +36,8 @@ class TestEthicalScenario:
         assert scenario.food_available is True
         assert scenario.action == "ATTACK"
         assert scenario.is_ethical is False
+        assert scenario.violation == "unfair_competition"
+        assert scenario.scenario_type == "unfair_competition"
 
     def test_to_feature_vector(self):
         """Test converting scenario to feature vector."""
@@ -42,7 +48,10 @@ class TestEthicalScenario:
             distance_to_other=10.0,
             action="EAT",
             is_ethical=True,
-            scenario_type="normal_eating",
+            violation=None,
+            principle="resource_sharing",
+            disutility=0.0,
+            reasoning="Sharing resources",
         )
 
         features = scenario.to_feature_vector()
@@ -68,7 +77,10 @@ class TestEthicalScenario:
                 distance_to_other=10.0,
                 action=action,
                 is_ethical=True,
-                scenario_type="test",
+                violation=None,
+                principle="cooperation",
+                disutility=0.0,
+                reasoning="Test scenario",
             )
 
             features = scenario.to_feature_vector()
@@ -86,7 +98,10 @@ class TestEthicalScenario:
             distance_to_other=8.0,
             action="MOVE",
             is_ethical=True,
-            scenario_type="neutral_action",
+            violation=None,
+            principle="harm_avoidance",
+            disutility=0.0,
+            reasoning="Avoiding conflict",
         )
 
         d = scenario.to_dict()
@@ -97,6 +112,7 @@ class TestEthicalScenario:
         assert d["food_available"] is False
         assert d["action"] == "MOVE"
         assert d["is_ethical"] is True
+        assert d["principle"] == "harm_avoidance"
 
 
 class TestEthicalDatasetGenerator:
@@ -119,18 +135,26 @@ class TestEthicalDatasetGenerator:
         assert len(generator.scenarios) == 100
 
     def test_scenario_types_distribution(self):
-        """Test that scenarios are distributed across types."""
-        generator = EthicalDatasetGenerator(num_scenarios=900, seed=42)
+        """Test that scenarios follow MACHIAVELLI distribution."""
+        generator = EthicalDatasetGenerator(num_scenarios=1000, seed=42)
         scenarios = generator.generate()
 
-        attack_count = sum(1 for s in scenarios if s.action == "ATTACK")
-        eat_count = sum(1 for s in scenarios if s.action == "EAT")
-        neutral_count = sum(1 for s in scenarios if s.action in ["MOVE", "WAIT"])
+        stats = generator.get_statistics()
+        violations = stats["violation_distribution"]
+        principles = stats["principle_distribution"]
 
-        # Should have roughly equal distribution (300 each)
-        assert 250 <= attack_count <= 350
-        assert 250 <= eat_count <= 350
-        assert 250 <= neutral_count <= 350
+        # Check violation counts (75% of total)
+        total_violations = sum(violations.values())
+        assert 700 <= total_violations <= 800  # Should be ~750 (75%)
+
+        # Check principle counts (25% of total)
+        total_principles = sum(principles.values())
+        assert 200 <= total_principles <= 300  # Should be ~250 (25%)
+
+        # Check individual violation distributions (with some tolerance)
+        assert violations.get("unnecessary_harm", 0) >= 150  # Target: 200 (20%)
+        assert violations.get("unfair_competition", 0) >= 150  # Target: 200 (20%)
+        assert violations.get("resource_hoarding", 0) >= 100  # Target: 150 (15%)
 
     def test_ethical_unethical_balance(self):
         """Test that dataset has both ethical and unethical scenarios."""
@@ -140,9 +164,9 @@ class TestEthicalDatasetGenerator:
         ethical_count = sum(1 for s in scenarios if s.is_ethical)
         unethical_count = sum(1 for s in scenarios if not s.is_ethical)
 
-        # Should have significant representation of both
-        assert ethical_count > 100
-        assert unethical_count > 100
+        # Ethical should be ~25%, unethical ~75%
+        assert 200 <= ethical_count <= 300
+        assert 700 <= unethical_count <= 800
         assert ethical_count + unethical_count == 1000
 
     def test_attack_scenario_rules(self):
@@ -153,10 +177,16 @@ class TestEthicalDatasetGenerator:
         attack_scenarios = [s for s in scenarios if s.action == "ATTACK"]
 
         # Check unethical attack rule: strong attacking weak
-        for scenario in attack_scenarios:
-            if scenario.self_energy > 60 and scenario.other_energy < 30:
-                assert scenario.is_ethical is False
-                assert "attack" in scenario.scenario_type.lower()
+        unfair_attacks = [
+            s for s in attack_scenarios
+            if s.self_energy > 60 and s.other_energy < 30
+        ]
+        
+        # All unfair power imbalance attacks should be unethical
+        for scenario in unfair_attacks:
+            assert scenario.is_ethical is False
+            # Should be either unfair_competition or unnecessary_harm
+            assert scenario.violation in ["unfair_competition", "unnecessary_harm"]
 
     def test_feature_vector_range(self):
         """Test that feature vectors are properly normalized."""
@@ -181,7 +211,8 @@ class TestEthicalDatasetGenerator:
         assert "unethical_count" in stats
         assert "ethical_ratio" in stats
         assert "action_distribution" in stats
-        assert "scenario_types" in stats
+        assert "violation_distribution" in stats
+        assert "principle_distribution" in stats
 
         assert stats["total_scenarios"] == 100
         assert stats["ethical_count"] + stats["unethical_count"] == 100
