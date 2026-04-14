@@ -13,7 +13,7 @@ mypy-extensions==1.1.0
 interrogate==1.7.0
 
 # Testing coverage
-pytest==9.0.2
+pytest==9.0.3
 pytest-cov==7.0.0
 
 # Pre-commit hooks (optional)
